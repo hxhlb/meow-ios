@@ -12,6 +12,13 @@
 
 static os_log_t gLog;
 
+// Phys-footprint soft cap: jetsam on the NE extension hits around 50 MiB on
+// recent iOS. Restart preemptively at 45 MiB so we drop allocator fragmentation
+// + Rust runtime state before the kernel kills us. Cooldown keeps us from
+// thrashing if the post-restart footprint is still hugging the cap.
+static const NSInteger kSoftCapFootprintMB    = 45;
+static const NSTimeInterval kRestartCooldownS = 60.0;
+
 @implementation MWTunnelEngine {
     NEPacketTunnelFlow *_flow;
     MWPacketWriter *_writer;
@@ -27,6 +34,7 @@ static os_log_t gLog;
     int64_t _lastDown;
     NSTimeInterval _lastTime;
     int _pumpTick;
+    NSTimeInterval _lastRestartAttempt;  // CFAbsoluteTime; 0 = never
 }
 
 + (void)initialize {
@@ -241,6 +249,8 @@ static os_log_t gLog;
         malloc_zone_pressure_relief(NULL, 0);
     }
 
+    [self maybeRestartForFootprint:footprintMB now:now];
+
     NSTimeInterval epoch = now + NSTimeIntervalSince1970;
     NSDictionary *snapshot = @{
         @"uploadBytes":    @(up),
@@ -263,6 +273,25 @@ static os_log_t gLog;
         return;
     }
     [MWDarwinBridge post:MWNotificationTraffic];
+}
+
+// MARK: - Soft-cap watchdog
+
+- (void)maybeRestartForFootprint:(NSInteger)footprintMB now:(NSTimeInterval)now {
+    if (footprintMB < kSoftCapFootprintMB) return;
+    if (atomic_load_explicit(&_restarting, memory_order_relaxed)) return;
+    if (_lastRestartAttempt > 0 && (now - _lastRestartAttempt) < kRestartCooldownS) {
+        return;
+    }
+    _lastRestartAttempt = now;
+
+    os_log_error(gLog,
+                 "soft-cap: footprint=%ldMB >= %ldMB, restarting engine",
+                 (long)footprintMB, (long)kSoftCapFootprintMB);
+
+    [self restartWithCompletion:^(BOOL ok) {
+        os_log_info(gLog, "soft-cap: restart completion ok=%d", ok);
+    }];
 }
 
 // MARK: - Engine restart
