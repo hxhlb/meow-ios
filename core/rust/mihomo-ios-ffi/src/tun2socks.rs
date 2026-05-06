@@ -535,16 +535,38 @@ async fn run_tun2socks(
 // In-process TCP dispatch into mihomo_tunnel
 // ---------------------------------------------------------------------------
 
+/// RAII guard that decrements `ACTIVE_TCP_CONNS` on drop. Replaces the
+/// manual `fetch_add` / `fetch_sub` pair so the counter stays balanced
+/// when `dispatch_tcp` is dropped mid-`.await` — i.e. when the idle
+/// sweeper, the hourly watchdog, or the tunnel-shutdown loop calls
+/// `FlowRecord::abort.abort()`. Without the guard, every aborted flow
+/// leaked +1 on the counter, which is what users saw as a "1k+ active
+/// connections" reading after hours of normal sweeper activity even
+/// though the live `tcp_flows()` registry was bounded at `TCP_BURST_CAP`.
+struct ActiveTcpGuard;
+
+impl ActiveTcpGuard {
+    fn new() -> Self {
+        ACTIVE_TCP_CONNS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ActiveTcpGuard {
+    fn drop(&mut self) {
+        ACTIVE_TCP_CONNS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn dispatch_tcp(
     stream: NetstackTcpStream,
     src: SocketAddr,
     dst: SocketAddr,
     state: Arc<FlowState>,
 ) {
-    ACTIVE_TCP_CONNS.fetch_add(1, Ordering::Relaxed);
+    let _active = ActiveTcpGuard::new();
     let Some(tunnel) = crate::engine::tunnel() else {
         logging::bridge_log("tun2socks: engine not running, dropping TCP flow");
-        ACTIVE_TCP_CONNS.fetch_sub(1, Ordering::Relaxed);
         return;
     };
 
@@ -571,7 +593,6 @@ async fn dispatch_tcp(
         state,
     });
     mihomo_tunnel::tcp::handle_tcp(tunnel.inner(), conn, metadata).await;
-    ACTIVE_TCP_CONNS.fetch_sub(1, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -967,6 +988,38 @@ mod tests {
         let flows = tcp_flows();
         flows.clear();
         assert_eq!(close_all_tcp_flows(), 0);
+    }
+
+    #[tokio::test]
+    async fn active_tcp_guard_balances_on_drop_and_panic() {
+        // Snapshot, then exercise the guard through both a normal scope-exit
+        // and a panic-unwind. Both must restore the counter to its baseline.
+        let baseline = ACTIVE_TCP_CONNS.load(Ordering::Relaxed);
+
+        {
+            let _g = ActiveTcpGuard::new();
+            assert_eq!(
+                ACTIVE_TCP_CONNS.load(Ordering::Relaxed),
+                baseline + 1,
+                "guard increments on construction"
+            );
+        }
+        assert_eq!(
+            ACTIVE_TCP_CONNS.load(Ordering::Relaxed),
+            baseline,
+            "guard decrements on scope exit"
+        );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = ActiveTcpGuard::new();
+            panic!("simulating mid-flow abort");
+        }));
+        assert!(result.is_err(), "panic should propagate");
+        assert_eq!(
+            ACTIVE_TCP_CONNS.load(Ordering::Relaxed),
+            baseline,
+            "guard decrements even when the holding scope unwinds"
+        );
     }
 
     #[tokio::test]
