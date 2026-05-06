@@ -81,6 +81,15 @@ const TCP_IDLE_SWEEP_INTERVAL_SECS: u64 = 30;
 const UDP_BURST_CAP: usize = 512;
 const DNS_BURST_CAP: usize = 256;
 
+// Hourly watchdog: belt-and-suspenders backstop on top of `TCP_BURST_CAP`.
+// Once an hour, if the live flow registry has somehow grown past
+// `TCP_HOURLY_WATCHDOG_THRESHOLD` (e.g. a leaked permit, a future cap raise,
+// or a runaway reconnect storm slipping past the semaphore), abort *every*
+// flow in the table. Aggressive, but the alternative is sitting at jetsam
+// risk for another 59 minutes.
+const TCP_HOURLY_WATCHDOG_INTERVAL_SECS: u64 = 3600;
+const TCP_HOURLY_WATCHDOG_THRESHOLD: usize = 1024;
+
 static TCP_CAP_LOG_LAST_MS: AtomicU64 = AtomicU64::new(0);
 static UDP_CAP_LOG_LAST_MS: AtomicU64 = AtomicU64::new(0);
 static DNS_CAP_LOG_LAST_MS: AtomicU64 = AtomicU64::new(0);
@@ -139,10 +148,41 @@ fn sweep_idle_tcp_flows() -> usize {
             TCP_IDLE_SECS
         );
         for (id, src, dst) in &evicted {
-            logging::bridge_log(&format!("tun2socks: TCP idle-evict {} {} -> {}", id, src, dst));
+            logging::bridge_log(&format!(
+                "tun2socks: TCP idle-evict {} {} -> {}",
+                id, src, dst
+            ));
         }
     }
     evicted.len()
+}
+
+/// Abort every flow in the registry. Same `abort()` semantics as the idle
+/// sweeper — dropping the `dispatch_tcp` future closes both halves of the
+/// relay and releases the held burst-cap permit. Returns the number of
+/// flows closed. Used by the hourly watchdog when the live count exceeds
+/// `TCP_HOURLY_WATCHDOG_THRESHOLD`.
+fn close_all_tcp_flows() -> usize {
+    let flows = tcp_flows();
+    let mut closed: Vec<(u64, SocketAddr, SocketAddr)> = Vec::with_capacity(flows.len());
+    flows.retain(|&id, rec| {
+        rec.abort.abort();
+        closed.push((id, rec.src, rec.dst));
+        false
+    });
+    if !closed.is_empty() {
+        warn!(
+            "tun2socks: hourly watchdog closed {} TCP flows",
+            closed.len()
+        );
+        for (id, src, dst) in &closed {
+            logging::bridge_log(&format!(
+                "tun2socks: TCP watchdog-close {} {} -> {}",
+                id, src, dst
+            ));
+        }
+    }
+    closed.len()
 }
 
 fn warn_capped(slot: &AtomicU64, msg: &str) {
@@ -363,6 +403,33 @@ async fn run_tun2socks(
         }
     });
 
+    // Hourly watchdog: if the flow registry has crept past the threshold,
+    // close everything. Read the count off `tcp_flows()` directly (the
+    // registry is the source of truth — `ACTIVE_TCP_CONNS` is incremented
+    // inside `dispatch_tcp` and can briefly disagree at flow boundaries).
+    let watchdog_handle = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+            TCP_HOURLY_WATCHDOG_INTERVAL_SECS,
+        ));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip the immediate first tick so we don't fire right at startup.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if !TUN2SOCKS_RUNNING.load(Ordering::Relaxed) {
+                break;
+            }
+            let live = tcp_flows().len();
+            if live > TCP_HOURLY_WATCHDOG_THRESHOLD {
+                warn!(
+                    "tun2socks: hourly watchdog tripped: {} live TCP flows > {} threshold, closing all",
+                    live, TCP_HOURLY_WATCHDOG_THRESHOLD
+                );
+                close_all_tcp_flows();
+            }
+        }
+    });
+
     let egress_handle = tokio::spawn(async move {
         while let Some(pkt) = egress_rx.recv().await {
             emitter.emit(&pkt);
@@ -446,6 +513,7 @@ async fn run_tun2socks(
     stack_handle.abort();
     tcp_accept_handle.abort();
     idle_sweeper_handle.abort();
+    watchdog_handle.abort();
     udp_accept_handle.abort();
     udp_writer_handle.abort();
     egress_handle.abort();
@@ -821,6 +889,15 @@ async fn handle_dns_query(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::sync::Mutex as StdMutex;
+
+    /// All tests in this module mutate the process-wide `tcp_flows()`
+    /// registry. Default `cargo test` parallelism races them; serialize
+    /// through a single guard so they observe a clean slate.
+    fn flows_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: StdMutex<()> = StdMutex::new(());
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn dummy_addr(port: u16) -> SocketAddr {
         SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port)
@@ -837,6 +914,7 @@ mod tests {
 
     #[tokio::test]
     async fn sweep_evicts_only_idle_flows() {
+        let _guard = flows_test_guard();
         let flows = tcp_flows();
         flows.clear();
 
@@ -848,9 +926,7 @@ mod tests {
             stale_id,
             FlowRecord {
                 state: Arc::new(FlowState {
-                    last_active_ms: AtomicU64::new(
-                        now.saturating_sub((TCP_IDLE_SECS + 5) * 1000),
-                    ),
+                    last_active_ms: AtomicU64::new(now.saturating_sub((TCP_IDLE_SECS + 5) * 1000)),
                 }),
                 abort: dummy_handle(),
                 src: dummy_addr(1),
@@ -879,8 +955,57 @@ mod tests {
 
     #[tokio::test]
     async fn sweep_with_no_flows_is_a_no_op() {
+        let _guard = flows_test_guard();
         let flows = tcp_flows();
         flows.clear();
         assert_eq!(sweep_idle_tcp_flows(), 0);
+    }
+
+    #[tokio::test]
+    async fn close_all_with_no_flows_is_a_no_op() {
+        let _guard = flows_test_guard();
+        let flows = tcp_flows();
+        flows.clear();
+        assert_eq!(close_all_tcp_flows(), 0);
+    }
+
+    #[tokio::test]
+    async fn close_all_clears_every_flow_regardless_of_freshness() {
+        let _guard = flows_test_guard();
+        let flows = tcp_flows();
+        flows.clear();
+
+        let now = now_ms();
+        let stale_id = TCP_FLOW_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+        let fresh_id = TCP_FLOW_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+
+        flows.insert(
+            stale_id,
+            FlowRecord {
+                state: Arc::new(FlowState {
+                    last_active_ms: AtomicU64::new(now.saturating_sub((TCP_IDLE_SECS + 5) * 1000)),
+                }),
+                abort: dummy_handle(),
+                src: dummy_addr(11),
+                dst: dummy_addr(12),
+            },
+        );
+        flows.insert(
+            fresh_id,
+            FlowRecord {
+                state: Arc::new(FlowState {
+                    last_active_ms: AtomicU64::new(now),
+                }),
+                abort: dummy_handle(),
+                src: dummy_addr(13),
+                dst: dummy_addr(14),
+            },
+        );
+
+        let closed = close_all_tcp_flows();
+        assert_eq!(closed, 2, "watchdog closes every flow, idle or fresh");
+        assert!(flows.is_empty(), "registry should be empty after close-all");
+
+        flows.clear();
     }
 }
