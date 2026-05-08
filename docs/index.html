@@ -185,6 +185,18 @@
         aspect-ratio: 16 / 9;
         background: #06101f;
       }
+      .video-note {
+        margin: -16px auto 28px;
+        max-width: 760px;
+        text-align: center;
+        color: var(--fg-subtle);
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+      .video-note a {
+        color: var(--accent);
+        font-weight: 600;
+      }
 
       /* ---------- CTA row ---------- */
       .cta-row {
@@ -438,10 +450,12 @@
         <div class="video-hero" aria-label="meow-ios feature overview">
           <video
             autoplay
+            controls
             muted
             loop
             playsinline
             preload="metadata"
+            poster="meow-intro-poster.svg"
             width="1920"
             height="1080"
           >
@@ -450,6 +464,10 @@
             <a href="meow-intro.mp4">meow-intro.mp4</a>.
           </video>
         </div>
+        <p class="video-note">
+          If autoplay is blocked on your browser, use the player controls or
+          <a href="meow-intro.mp4">open the intro video directly</a>.
+        </p>
 
         <div class="cta-row">
           <a class="cta" href="https://testflight.apple.com/join/nnDAn7ZH">

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">meow intro video poster</title>
+  <desc id="desc">Preview card for the meow iOS public beta intro video.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#06101f" />
+      <stop offset="55%" stop-color="#0f1f3d" />
+      <stop offset="100%" stop-color="#1a3566" />
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="22%" r="70%">
+      <stop offset="0%" stop-color="#0a84ff" stop-opacity="0.45" />
+      <stop offset="55%" stop-color="#5ac8fa" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#5ac8fa" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="pill" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#0a84ff" />
+      <stop offset="100%" stop-color="#0070f5" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)" />
+  <rect width="1920" height="1080" fill="url(#glow)" />
+
+  <g opacity="0.16" fill="none">
+    <circle cx="320" cy="240" r="180" stroke="#5ac8fa" stroke-width="2" />
+    <circle cx="1550" cy="250" r="220" stroke="#0a84ff" stroke-width="2" />
+    <circle cx="1500" cy="860" r="260" stroke="#30d158" stroke-width="2" />
+  </g>
+
+  <g transform="translate(160 126)">
+    <rect x="0" y="0" width="220" height="56" rx="28" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.16" />
+    <circle cx="34" cy="28" r="8" fill="#30d158" />
+    <text x="56" y="35" fill="#dce7ff" font-family="Inter, SF Pro Display, system-ui, sans-serif" font-size="24" font-weight="600">
+      Public beta · iOS 26
+    </text>
+
+    <text x="0" y="188" fill="#ffffff" font-family="Inter, SF Pro Display, system-ui, sans-serif" font-size="148" font-weight="800" letter-spacing="-6">
+      meow
+    </text>
+    <text x="0" y="256" fill="#ebebf5" fill-opacity="0.82" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="42" font-weight="500">
+      Native iOS Mihomo proxy client with a Liquid Glass UI.
+    </text>
+    <text x="0" y="314" fill="#ebebf5" fill-opacity="0.58" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="34" font-weight="500">
+      Clash-style subscriptions, smart split routing, DoH, and live traffic stats.
+    </text>
+  </g>
+
+  <g transform="translate(150, 470)">
+    <rect width="1620" height="430" rx="42" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.14" />
+    <g transform="translate(84, 76)">
+      <rect width="560" height="278" rx="28" fill="#ffffff" fill-opacity="0.07" stroke="#ffffff" stroke-opacity="0.12" />
+      <text x="34" y="54" fill="#ebebf5" fill-opacity="0.72" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="28" font-weight="600">
+        Feature overview
+      </text>
+      <text x="34" y="108" fill="#ffffff" font-family="Inter, SF Pro Display, system-ui, sans-serif" font-size="54" font-weight="700">
+        Intro demo video
+      </text>
+      <text x="34" y="154" fill="#ebebf5" fill-opacity="0.62" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="28" font-weight="500">
+        GitHub Pages fallback poster for browsers that block autoplay.
+      </text>
+
+      <g transform="translate(34, 194)">
+        <rect width="212" height="52" rx="26" fill="url(#pill)" />
+        <text x="28" y="34" fill="#ffffff" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="24" font-weight="700">
+          Open meow-intro.mp4
+        </text>
+      </g>
+    </g>
+
+    <g transform="translate(760, 44)">
+      <circle cx="360" cy="170" r="128" fill="#0a84ff" fill-opacity="0.24" stroke="#ffffff" stroke-opacity="0.14" stroke-width="3" />
+      <circle cx="360" cy="170" r="86" fill="#ffffff" fill-opacity="0.12" />
+      <polygon points="336,122 336,218 420,170" fill="#ffffff" />
+      <rect x="42" y="286" width="636" height="34" rx="17" fill="#ffffff" fill-opacity="0.08" />
+      <rect x="42" y="286" width="332" height="34" rx="17" fill="#0a84ff" />
+      <circle cx="374" cy="303" r="19" fill="#ffffff" />
+      <text x="42" y="378" fill="#ebebf5" fill-opacity="0.62" font-family="Inter, SF Pro Text, system-ui, sans-serif" font-size="24" font-weight="600">
+        36-second product walkthrough · 1920 × 1080
+      </text>
+    </g>
+  </g>
+</svg>
