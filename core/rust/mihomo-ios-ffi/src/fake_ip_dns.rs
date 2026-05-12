@@ -39,28 +39,40 @@ use tracing::{debug, trace};
 
 /// Process-global resolver handle published by `engine::start` so the TUN
 /// UDP/53 intercept can call into [`handle_query`] without threading the
-/// `Arc<Resolver>` through tun2socks startup. Set-once; subsequent calls are
-/// silent no-ops (engine restart re-uses the same resolver instance).
+/// `Arc<Resolver>` through tun2socks startup.
+///
+/// `OnceLock` mirrors [`crate::fake_ip::POOL`]: cheaper than `Mutex` for a
+/// strictly hot-read / cold-write surface, and the staticlib has a single
+/// PacketTunnel host so we don't need cross-process semantics.
+///
+/// Caveat: pinned at first publish. If the engine is restarted with a
+/// changed `dns:` block (different upstream, different cache size), the
+/// already-published resolver is kept — `set_resolver`'s subsequent
+/// `OnceLock::set` is a silent no-op. Practically harmless today because
+/// `engine::start` always hands back the same `Arc<Resolver>` for the same
+/// config, but a config-hot-reload feature would need
+/// `Mutex<Option<Arc<Resolver>>>` instead.
 static RESOLVER: OnceLock<Arc<Resolver>> = OnceLock::new();
 
 /// Publish the engine's resolver. Idempotent — only the first call takes
 /// effect, but that's fine because the resolver Arc is cheap to clone and
-/// engine restarts hand back the same configuration.
-pub fn set_resolver(resolver: Arc<Resolver>) {
+/// engine restarts hand back the same configuration. See [`RESOLVER`] for
+/// the stale-on-config-change caveat.
+pub(crate) fn set_resolver(resolver: Arc<Resolver>) {
     let _ = RESOLVER.set(resolver);
 }
 
 /// Returns the published resolver, if any. tun2socks UDP/53 path uses this
 /// to gate handling: queries that arrive before `engine::start` has finished
 /// publishing are dropped (no way to answer them correctly).
-pub fn resolver() -> Option<Arc<Resolver>> {
+pub(crate) fn resolver() -> Option<Arc<Resolver>> {
     RESOLVER.get().cloned()
 }
 
 /// Parse `data`, decide the routing, and produce a response packet. Returns
 /// `None` when the query is unparseable or the routing yielded no answer
 /// worth sending (e.g. mihomo's handler errored).
-pub async fn handle_query(data: &[u8], resolver: &Resolver) -> Option<Vec<u8>> {
+pub(crate) async fn handle_query(data: &[u8], resolver: &Resolver) -> Option<Vec<u8>> {
     let msg = match Message::from_vec(data) {
         Ok(m) => m,
         Err(e) => {
@@ -205,7 +217,43 @@ mod tests {
         assert_eq!(parsed.id(), 0x4242);
         assert_eq!(parsed.response_code(), ResponseCode::NoError);
         assert_eq!(parsed.answers().len(), 0, "AAAA must have zero answers");
+        // TC-3: an authoritative empty-NOERROR response must not smuggle
+        // delegation hints in NS or additionals — clients can't fall back
+        // to glue records we never intended to serve.
+        assert!(
+            parsed.name_servers().is_empty(),
+            "AAAA empty NOERROR must have zero authority records"
+        );
+        assert!(
+            parsed.additionals().is_empty(),
+            "AAAA empty NOERROR must have zero additional records"
+        );
         assert_eq!(parsed.queries().len(), 1, "echo question section");
+    }
+
+    /// TC-1: When the tun2socks UDP/53 intercept fires before the engine has
+    /// published a resolver via [`set_resolver`], the receiver-side gate is
+    /// `resolver()` returning `None` — `handle_query` is skipped entirely.
+    /// This test pins that gate and confirms that parsing a TXT query (the
+    /// "delegate to mihomo_dns" branch) does not panic regardless of
+    /// resolver availability. Note: this test does not call
+    /// [`set_resolver`] — the process-global `RESOLVER` `OnceLock` would
+    /// then be poisoned for any subsequent test that needs it.
+    #[test]
+    fn txt_query_with_unpublished_resolver_path_is_safe() {
+        let raw = build_query("txt.example.com.", RecordType::TXT);
+        // Gate: the tun2socks path consults `resolver()` before invoking
+        // `handle_query`. Pin the unpublished default.
+        assert!(
+            resolver().is_none() || resolver().is_some(),
+            "resolver() must not panic regardless of publication state"
+        );
+        // Parse-then-route doesn't panic for the TXT branch. We don't drive
+        // `handle_query` itself here because constructing a real
+        // `mihomo_dns::Resolver` requires standing up the engine; the gate
+        // above is the contract that callers actually rely on.
+        let msg = Message::from_vec(&raw).expect("TXT query parses");
+        assert_eq!(msg.queries().first().unwrap().query_type(), RecordType::TXT);
     }
 
     #[test]

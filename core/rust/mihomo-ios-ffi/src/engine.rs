@@ -1,14 +1,21 @@
-//! Embedded mihomo-rust engine. Owns the REST API and DNS server tasks and
-//! holds the `Tunnel` used directly (in-process) by `tun2socks` — there is no
-//! local SOCKS listener; TCP flows hop Rust-to-Rust through a shared
+//! Embedded mihomo-rust engine. Owns the REST API task and holds the
+//! `Tunnel` used directly (in-process) by `tun2socks` — there is no local
+//! SOCKS listener; TCP flows hop Rust-to-Rust through a shared
 //! `Arc<TunnelInner>` rather than through a loopback socket.
 //!
-//! Lifecycle: `start(config_path)` spawns the REST API and (optional) DNS
-//! listener on the shared tokio runtime and keeps their `JoinHandle`s in
-//! `EngineState`. `stop()` aborts those tasks and *blocks* on them before
-//! returning — dropping the futures drops the `TcpListener`/`UdpSocket` and
-//! releases the ports synchronously, so a fast `start → stop → start` cycle
-//! doesn't race the previous bind (`EADDRINUSE`).
+//! DNS is not handled here. Post fake-IP merge the engine no longer spawns a
+//! DNS task: A/AAAA queries are answered synthetically by
+//! `crate::fake_ip_dns::handle_query` from the tun2socks UDP/53 intercept,
+//! and any other RR type delegates into `mihomo_dns::DnsServer::handle_query`
+//! using the resolver `engine::start` publishes via
+//! [`crate::fake_ip_dns::set_resolver`]. No socket is bound for DNS.
+//!
+//! Lifecycle: `start(config_path)` spawns the REST API on the shared tokio
+//! runtime and keeps its `JoinHandle` in `EngineState`. `stop()` aborts that
+//! task and *blocks* on it before returning — dropping the future drops the
+//! `TcpListener` and releases the port synchronously, so a fast
+//! `start → stop → start` cycle doesn't race the previous bind
+//! (`EADDRINUSE`).
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use mihomo_api::log_stream::{LogBroadcastLayer, LogMessage};
@@ -43,9 +50,10 @@ fn install_tls_provider() {
 }
 
 /// Strip the shorthand listener ports and explicit `listeners:` array from a
-/// raw config YAML. iOS v1.0 dispatches TCP flows + DoH in-process through
-/// `mihomo_tunnel::tcp::handle_tcp` + `tokio::io::duplex`; there is no
-/// loopback listener and no bound port. Upstream's `build_named_listeners`
+/// raw config YAML. iOS dispatches TCP flows in-process via the netstack →
+/// `mihomo_tunnel` Rust-to-Rust hop (no SOCKS loopback) and answers DNS
+/// inside the tun2socks UDP/53 intercept (no bound resolver port); there is
+/// no loopback listener and no bound port. Upstream's `build_named_listeners`
 /// (mihomo-config/src/lib.rs) hard-errors on duplicate ports (ADR-0002
 /// Class A) — e.g. "port 7890 already used by listener 'mixed'" — so a
 /// user YAML combining `mixed-port: 7890` with a listeners entry on the

@@ -4,8 +4,10 @@
 //! DNS clients (Clash-style) and supports reverse lookup so tun2socks can
 //! restore the original hostname before dispatching a flow into mihomo. This
 //! replaces the v0.5-era `dns_table` (which stored *real* IPs returned by the
-//! in-FFI DoH/CN-DNS client) with a true fake-IP allocator — DNS resolution
-//! itself now lives entirely in `mihomo_dns::DnsServer`.
+//! in-FFI DoH/CN-DNS client) with a true fake-IP allocator. A/AAAA queries
+//! are answered synthetically by [`crate::fake_ip_dns::handle_query`] and
+//! never reach `mihomo_dns::DnsServer`; only other RR types (TXT, HTTPS,
+//! SVCB, MX, …) delegate to the upstream resolver.
 //!
 //! Default CIDR: `28.0.0.0/8` (mihomo-party convention — avoids both
 //! carrier-grade NAT `100.64/10` and the IETF benchmarking range `198.18/15`
@@ -38,14 +40,17 @@ static POOL: OnceLock<FakeIpPool> = OnceLock::new();
 
 /// Return the process-wide fake-IP pool, initializing with module defaults
 /// if `init_pool` has not been called yet.
-pub fn pool() -> &'static FakeIpPool {
+pub(crate) fn pool() -> &'static FakeIpPool {
     POOL.get_or_init(FakeIpPool::with_defaults)
 }
 
-/// One-shot initializer for the process-wide pool. Returns `Ok` if this call
-/// installed the pool; `Err(())` if the pool was already initialized (the
-/// existing instance is kept). Call at engine start before any DNS traffic.
-pub fn init_pool(cidr: &str, ttl: Duration) -> Result<(), FakeIpError> {
+/// One-shot initializer for the process-wide pool. Always returns `Ok` —
+/// the underlying `OnceLock::set` is a silent no-op when the pool was
+/// already initialized (the existing instance is kept). Call at engine start
+/// before any DNS traffic. The `Result` is kept on the signature so a future
+/// migration to a re-init-able pool can surface failure without a churning
+/// API change; callers currently discard the return.
+pub(crate) fn init_pool(cidr: &str, ttl: Duration) -> Result<(), FakeIpError> {
     let p = FakeIpPool::new(cidr, ttl)?;
     POOL.set(p).map_err(|_| ()).ok();
     Ok(())
@@ -59,7 +64,7 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(600);
 pub const DEFAULT_CIDR: &str = "28.0.0.0/8";
 
 #[derive(Debug)]
-pub enum FakeIpError {
+pub(crate) enum FakeIpError {
     InvalidCidr(String),
     EmptyPool(String),
 }
@@ -79,7 +84,7 @@ impl std::fmt::Display for FakeIpError {
 impl std::error::Error for FakeIpError {}
 
 /// CIDR-backed allocator. Cheaply clonable via `Arc` at the caller.
-pub struct FakeIpPool {
+pub(crate) struct FakeIpPool {
     inner: Mutex<Inner>,
 }
 

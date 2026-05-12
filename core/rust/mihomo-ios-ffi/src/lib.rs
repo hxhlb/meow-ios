@@ -209,7 +209,13 @@ pub unsafe extern "C" fn meow_engine_validate_config(yaml: *const c_char, len: c
 /// through the tun2socks layer. Useful for diagnosing connection accumulation.
 #[no_mangle]
 pub extern "C" fn meow_active_tcp_conns() -> i64 {
-    tun2socks::ACTIVE_TCP_CONNS.load(std::sync::atomic::Ordering::Relaxed)
+    // `.max(0)` defensively: `ACTIVE_TCP_CONNS` could in principle dip below
+    // zero if a flow's spawn-aborted path decremented before the matching
+    // increment landed. Cheap clamp keeps the FFI return non-negative even
+    // if that race ever materializes.
+    tun2socks::ACTIVE_TCP_CONNS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(0)
 }
 
 /// Write cumulative upload/download byte counters. Safe to call before

@@ -101,8 +101,8 @@ struct FlowState {
 
 /// Registry entry for one in-flight TCP flow. Aborting `abort` drops the
 /// `dispatch_tcp` future, which closes both halves of the relay — the
-/// netstack stream and the upstream SOCKS5 connection mihomo opened (or, on
-/// the CN-IP-direct path, the direct `TcpStream`).
+/// netstack stream side and the in-process mihomo dispatch (whichever
+/// outbound the rule engine selected: proxy, direct, or reject).
 struct FlowRecord {
     state: Arc<FlowState>,
     abort: tokio::task::AbortHandle,
@@ -466,7 +466,7 @@ async fn run_tun2socks(
         // — never let it touch the smoltcp stack (the destination IP isn't
         // a real host on the inside, and we'd just create an orphan
         // session).
-        if parse_udp_packet(&ip_data).is_some_and(|(_, _, _, dst_port, _)| dst_port == 53) {
+        if parse_udp_packet(&ip_data).is_some_and(|p| p.dst_port == 53) {
             let request = ip_data.clone();
             let egress = egress_tx.clone();
             tokio::spawn(async move {
@@ -474,11 +474,11 @@ async fn run_tun2socks(
                     trace!("tun2socks: UDP/53 query dropped — resolver not yet published");
                     return;
                 };
-                let Some((_, _, _, _, payload)) = parse_udp_packet(&request) else {
+                let Some(parsed) = parse_udp_packet(&request) else {
                     return;
                 };
                 let Some(response_payload) =
-                    crate::fake_ip_dns::handle_query(payload, &resolver).await
+                    crate::fake_ip_dns::handle_query(parsed.payload, &resolver).await
                 else {
                     return;
                 };
@@ -509,8 +509,8 @@ async fn run_tun2socks(
     egress_handle.abort();
     drop(udp_reply_tx);
 
-    // Abort any TCP flows still held in the registry so the upstream
-    // SOCKS5 / direct TCP connections don't outlive the tunnel.
+    // Abort any TCP flows still held in the registry so the in-process
+    // mihomo dispatch tasks don't outlive the tunnel.
     let flows = tcp_flows();
     for entry in flows.iter() {
         entry.abort.abort();
@@ -879,7 +879,23 @@ fn ipv4_header_checksum(header: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-fn parse_udp_packet(ip_data: &[u8]) -> Option<(u32, u16, u32, u16, &[u8])> {
+/// Parsed view of an IPv4 + UDP packet. Returned by [`parse_udp_packet`]; the
+/// `payload` borrow ties back to the caller's `ip_data` slice. Named fields
+/// avoid the positional-tuple footgun that hid the `from_ne_bytes` bug in
+/// FI-1: the UDP/53 intercept only consumed `dst_port`, so an endian flip in
+/// the IP fields wasn't visible at the call site.
+struct ParsedUdp<'a> {
+    #[allow(dead_code)] // reserved for future callers (NAT-style src logging)
+    src_ip: u32,
+    #[allow(dead_code)]
+    src_port: u16,
+    #[allow(dead_code)]
+    dst_ip: u32,
+    dst_port: u16,
+    payload: &'a [u8],
+}
+
+fn parse_udp_packet(ip_data: &[u8]) -> Option<ParsedUdp<'_>> {
     if ip_data.len() < 28 {
         return None;
     }
@@ -893,8 +909,10 @@ fn parse_udp_packet(ip_data: &[u8]) -> Option<(u32, u16, u32, u16, &[u8])> {
     if ip_data.len() < ihl + 8 {
         return None;
     }
-    let src_ip = u32::from_ne_bytes([ip_data[12], ip_data[13], ip_data[14], ip_data[15]]);
-    let dst_ip = u32::from_ne_bytes([ip_data[16], ip_data[17], ip_data[18], ip_data[19]]);
+    // IPv4 addresses are on-wire big-endian; decode accordingly so the
+    // resulting `u32` matches `Ipv4Addr::from(u32)` semantics on every host.
+    let src_ip = u32::from_be_bytes([ip_data[12], ip_data[13], ip_data[14], ip_data[15]]);
+    let dst_ip = u32::from_be_bytes([ip_data[16], ip_data[17], ip_data[18], ip_data[19]]);
     let src_port = u16::from_be_bytes([ip_data[ihl], ip_data[ihl + 1]]);
     let dst_port = u16::from_be_bytes([ip_data[ihl + 2], ip_data[ihl + 3]]);
     let udp_len = u16::from_be_bytes([ip_data[ihl + 4], ip_data[ihl + 5]]) as usize;
@@ -903,7 +921,13 @@ fn parse_udp_packet(ip_data: &[u8]) -> Option<(u32, u16, u32, u16, &[u8])> {
     if start > end {
         return None;
     }
-    Some((src_ip, src_port, dst_ip, dst_port, &ip_data[start..end]))
+    Some(ParsedUdp {
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        payload: &ip_data[start..end],
+    })
 }
 
 #[cfg(test)]
@@ -966,6 +990,27 @@ mod tests {
         let mut pkt = synthetic_dns_query_packet();
         pkt[9] = 6; // protocol = TCP
         assert!(build_udp_reply(&pkt, b"x").is_none());
+    }
+
+    /// Regression for FI-1: `parse_udp_packet` previously used
+    /// `from_ne_bytes` for the src/dst IP fields, returning host-endian
+    /// garbage on little-endian targets (i.e. every Apple-Silicon and x86_64
+    /// device this ships on). The bug was latent because the only call site
+    /// consumes `dst_port`, but anything that decoded the u32 back via
+    /// `Ipv4Addr::from` would have seen reversed octets. Pin the on-wire
+    /// big-endian decode here so a future regression trips this test.
+    #[test]
+    fn parse_udp_packet_decodes_ipv4_wire_form_big_endian() {
+        let pkt = synthetic_dns_query_packet();
+        let parsed = parse_udp_packet(&pkt).expect("packet parses");
+        // synthetic_dns_query_packet() builds src 10.0.0.7:54321 and
+        // dst 172.19.0.2:53. After big-endian decoding the u32s must round
+        // -trip back to those Ipv4Addrs.
+        assert_eq!(Ipv4Addr::from(parsed.src_ip), Ipv4Addr::new(10, 0, 0, 7));
+        assert_eq!(Ipv4Addr::from(parsed.dst_ip), Ipv4Addr::new(172, 19, 0, 2));
+        assert_eq!(parsed.src_port, 54321);
+        assert_eq!(parsed.dst_port, 53);
+        assert_eq!(parsed.payload, b"QQQQ");
     }
 
     /// All tests in this module mutate the process-wide `tcp_flows()`

@@ -2,7 +2,7 @@
 name = "mihomo-ios-ffi"
 version = "0.1.0"
 edition = "2021"
-description = "mihomo-rust engine + tun2socks + TCP DNS for meow-ios — C ABI, no Go, no JNI."
+description = "mihomo-rust engine + tun2socks + fake-IP DNS for meow-ios — C ABI, no Go, no JNI."
 
 [lib]
 crate-type = ["staticlib"]
