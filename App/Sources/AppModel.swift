@@ -37,7 +37,6 @@ final class AppModel {
         AppGroup.containerURL.path.withCString { meow_core_set_home_dir($0) }
 
         let defaults = AppGroup.defaults
-        let prefs = Preferences.load(from: defaults)
         vpnManager = VpnManager()
         mihomoAPI = MihomoAPI(port: 9090, secret: defaults.string(forKey: PreferenceKey.apiSecret) ?? "")
         subscriptionService = SubscriptionService(
@@ -47,7 +46,6 @@ final class AppModel {
         dailyTrafficAccumulator = DailyTrafficAccumulator(
             modelContext: AppModelContainer.shared.container.mainContext,
         )
-        _ = prefs
     }
 
     func bootstrap() async {

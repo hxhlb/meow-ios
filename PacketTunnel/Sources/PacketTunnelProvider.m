@@ -10,6 +10,8 @@
 #import <mach/mach.h>
 @import Network;
 
+// keep in sync with MeowShared/Sources/MeowIPC/DiagnosticsIPC.swift and
+// MeowShared/Sources/MeowIPC/ProxyControlIPC.swift tag values
 static const uint8_t kDiagTagCanned     = 0x01;
 static const uint8_t kDiagTagUser       = 0x02;
 static const uint8_t kDiagTagMemory     = 0x03;
@@ -227,8 +229,11 @@ static os_log_t gLog;
     if ([command isEqualToString:@"stop"]) {
         [self cancelTunnelWithError:nil];
     } else if ([command isEqualToString:@"reload"]) {
-        // Full stop/start reload — M3 will add hot-reload via REST API
-        os_log_info(gLog, "reload intent received (stop/start path)");
+        // `reload` is currently a stop-only shim: the extension cancels the
+        // tunnel and the app is expected to re-trigger `start` once it
+        // observes the disconnected stage. M3 will add hot-reload via the
+        // mihomo REST API and avoid the round-trip.
+        os_log_info(gLog, "reload intent received (stop-only shim; app must restart)");
         [self cancelTunnelWithError:nil];
     }
     // "start" while running: no-op

@@ -16,6 +16,25 @@ final class MihomoAPI: @unchecked Sendable {
     // Mirrors the ingress-instrumentation pattern kept around #54.
     private let log = Logger(subsystem: "io.github.madeye.meow.app", category: "mihomo-api")
 
+    private enum URLBuildError: Error {
+        case invalidComponents(endpoint: URL)
+    }
+
+    private static func buildTestDelayURL(base: URL, proxy: String, url: String, timeout: Int) throws -> URL {
+        let endpoint = base.appending(path: "/proxies/\(proxy.urlEscaped)/delay")
+        guard var comps = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw URLBuildError.invalidComponents(endpoint: endpoint)
+        }
+        comps.queryItems = [
+            .init(name: "url", value: url),
+            .init(name: "timeout", value: String(timeout)),
+        ]
+        guard let target = comps.url else {
+            throw URLBuildError.invalidComponents(endpoint: endpoint)
+        }
+        return target
+    }
+
     init(
         port: Int = 9090,
         secret: String = "",
@@ -67,7 +86,9 @@ final class MihomoAPI: @unchecked Sendable {
         name: String,
     ) async throws {
         let payload = try ProxyControlIPC.encodeRequest(.select(group: group, name: name))
-        log.info("IPC proxy_select group=\(group, privacy: .public) name=\(name, privacy: .public)")
+        #if DEBUG
+            log.info("IPC proxy_select group=\(group, privacy: .public) name=\(name, privacy: .public)")
+        #endif
         let response: ProxyControlResponse = try await withCheckedThrowingContinuation { cont in
             do {
                 try session.sendProviderMessage(payload) { data in
@@ -113,15 +134,11 @@ final class MihomoAPI: @unchecked Sendable {
 
     func testDelay(proxy: String, url: String, timeout: Int = 5000) async throws -> Int {
         struct Resp: Decodable { let delay: Int? }
-        let endpoint = baseURL.appending(path: "/proxies/\(proxy.urlEscaped)/delay")
-        var comps = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
-        comps.queryItems = [
-            .init(name: "url", value: url),
-            .init(name: "timeout", value: String(timeout)),
-        ]
-        let target = comps.url!
-        // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
-        log.info("HTTP GET \(target.absoluteString, privacy: .public)")
+        let target = try Self.buildTestDelayURL(base: baseURL, proxy: proxy, url: url, timeout: timeout)
+        #if DEBUG
+            // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
+            log.info("HTTP GET \(target.absoluteString, privacy: .public)")
+        #endif
         let (data, resp) = try await session.data(for: request(for: target))
         logResponse(resp, body: data, url: target)
         return try (JSONDecoder().decode(Resp.self, from: data).delay) ?? -1
@@ -152,23 +169,13 @@ final class MihomoAPI: @unchecked Sendable {
     /// 204 on success; fresh delays are surfaced on the next `getProviders()`.
     func healthCheckProvider(name: String) async throws {
         let url = baseURL.appending(path: "/providers/proxies/\(name.urlEscaped)/healthcheck")
-        // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
-        log.info("HTTP GET \(url.absoluteString, privacy: .public)")
+        #if DEBUG
+            // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
+            log.info("HTTP GET \(url.absoluteString, privacy: .public)")
+        #endif
         let (data, resp) = try await session.data(for: request(for: url))
         logResponse(resp, body: data, url: url)
         try throwIfHTTPError(resp)
-    }
-
-    func getMemory() async throws -> MemoryResponse {
-        try await get("/memory")
-    }
-
-    func getConfigs() async throws -> ConfigsResponse {
-        try await get("/configs")
-    }
-
-    func patchConfigs(_ patch: ConfigsPatch) async throws {
-        try await patchJSON("/configs", body: patch)
     }
 
     /// Stream mihomo logs via WebSocket. Caller owns the AsyncStream — it
@@ -184,16 +191,20 @@ final class MihomoAPI: @unchecked Sendable {
                 if !secret.isEmpty {
                     req.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
                 }
-                // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
-                log.info("WS upgrade \(url.absoluteString, privacy: .public)")
+                #if DEBUG
+                    // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
+                    log.info("WS upgrade \(url.absoluteString, privacy: .public)")
+                #endif
                 let ws = session.webSocketTask(with: req)
                 ws.resume()
                 do {
                     while !Task.isCancelled {
                         let msg = try await ws.receive()
                         if case let .string(s) = msg {
-                            // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
-                            log.info("WS frame /logs: \(s.prefix(200), privacy: .public)")
+                            #if DEBUG
+                                // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
+                                log.info("WS frame /logs: \(s.prefix(200), privacy: .public)")
+                            #endif
                             if let entry = LogEntry.from(jsonString: s) {
                                 continuation.yield(entry)
                             }
@@ -215,8 +226,10 @@ final class MihomoAPI: @unchecked Sendable {
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let url = baseURL.appending(path: path)
-        // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
-        log.info("HTTP GET \(url.absoluteString, privacy: .public)")
+        #if DEBUG
+            // DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
+            log.info("HTTP GET \(url.absoluteString, privacy: .public)")
+        #endif
         let (data, resp) = try await session.data(for: request(for: url))
         logResponse(resp, body: data, url: url)
         try throwIfHTTPError(resp)
@@ -232,7 +245,9 @@ final class MihomoAPI: @unchecked Sendable {
         // currently safe (proxy-name selections), but the policy is no bodies
         // because it'd leak any future credential-bearing payload.
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        log.info("HTTP PUT \(url.absoluteString, privacy: .public)")
+        #if DEBUG
+            log.info("HTTP PUT \(url.absoluteString, privacy: .public)")
+        #endif
         let (data, resp) = try await session.data(for: req)
         logResponse(resp, body: data, url: url)
         try throwIfHTTPError(resp)
@@ -242,19 +257,9 @@ final class MihomoAPI: @unchecked Sendable {
         let url = baseURL.appending(path: path)
         var req = request(for: url)
         req.httpMethod = "DELETE"
-        log.info("HTTP DELETE \(url.absoluteString, privacy: .public)")
-        let (data, resp) = try await session.data(for: req)
-        logResponse(resp, body: data, url: url)
-        try throwIfHTTPError(resp)
-    }
-
-    private func patchJSON(_ path: String, body: some Encodable) async throws {
-        let url = baseURL.appending(path: path)
-        var req = request(for: url)
-        req.httpMethod = "PATCH"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder().encode(body)
-        log.info("HTTP PATCH \(url.absoluteString, privacy: .public)")
+        #if DEBUG
+            log.info("HTTP DELETE \(url.absoluteString, privacy: .public)")
+        #endif
         let (data, resp) = try await session.data(for: req)
         logResponse(resp, body: data, url: url)
         try throwIfHTTPError(resp)
@@ -262,9 +267,15 @@ final class MihomoAPI: @unchecked Sendable {
 
     /// DIAGNOSTIC: remove once Logs/Connections views are stable in v1.0.
     private func logResponse(_ response: URLResponse, body: Data, url: URL) {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        let preview = String(data: body.prefix(200), encoding: .utf8) ?? "<non-utf8 \(body.count) bytes>"
-        log.info("HTTP \(status, privacy: .public) from \(url.path, privacy: .public): \(preview, privacy: .public)")
+        #if DEBUG
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let preview = String(data: body.prefix(200), encoding: .utf8) ?? "<non-utf8 \(body.count) bytes>"
+            log.info(
+                "HTTP \(status, privacy: .public) from \(url.path, privacy: .public): \(preview, privacy: .public)",
+            )
+        #else
+            _ = (response, body, url)
+        #endif
     }
 
     private func request(for url: URL) -> URLRequest {

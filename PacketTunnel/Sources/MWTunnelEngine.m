@@ -84,12 +84,6 @@ static const NSTimeInterval kRestartCooldownS = 60.0;
         return NO;
     }
 
-    // DNS upstream selection now lives entirely in the embedded mihomo
-    // engine's `dns:` block — fake-IP NAT mode means a Settings-configured
-    // resolver list at this boundary would have no effect (the synthesized
-    // A records never leave the FFI). `prefs.dnsServers` is retained as a
-    // preference for future use but no longer wired into the Rust side.
-
     MWPacketWriter *writer = [[MWPacketWriter alloc] initWithFlow:_flow];
     _writer    = writer;
     _writerCtx = (void *)CFBridgingRetain(writer);
@@ -179,7 +173,7 @@ static const NSTimeInterval kRestartCooldownS = 60.0;
 // MARK: - Traffic pump (500 ms interval)
 
 - (void)startTrafficPump {
-    os_log_error(gLog, "engine: startTrafficPump entry");
+    os_log_debug(gLog, "engine: startTrafficPump entry");
     _lastUp   = 0;
     _lastDown = 0;
     _lastTime = [[NSDate date] timeIntervalSinceReferenceDate];
@@ -206,7 +200,7 @@ static const NSTimeInterval kRestartCooldownS = 60.0;
 }
 
 - (void)emitTrafficSnapshot {
-    os_log_error(gLog, "engine: emitTrafficSnapshot tick=%d", _pumpTick);
+    os_log_debug(gLog, "engine: emitTrafficSnapshot tick=%d", _pumpTick);
     int64_t up = 0, down = 0;
     meow_engine_traffic(&up, &down);
 
@@ -238,7 +232,7 @@ static const NSTimeInterval kRestartCooldownS = 60.0;
          "up=%lldB/s down=%lldB/s totalUp=%lldB totalDown=%lldB\n",
         _pumpTick, (long)footprintMB, (long)heapUsedKB, (long)heapFreeKB, tcpConns,
         upRate, downRate, up, down];
-    os_log_error(gLog, "memstats %{public}@", memline);
+    os_log_debug(gLog, "memstats %{public}@", memline);
 
     // Also write to a file in the App Group container so the Mac can poll it
     // via `xcrun devicectl device copy from --domain-type appGroupDataContainer`.
@@ -352,9 +346,6 @@ static const NSTimeInterval kRestartCooldownS = 60.0;
         atomic_store_explicit(&_restarting, NO, memory_order_relaxed);
         return NO;
     }
-
-    // See first-start branch: DNS upstream config now lives inside the
-    // mihomo engine, not at the FFI boundary.
 
     MWPacketWriter *writer = [[MWPacketWriter alloc] initWithFlow:_flow];
     _writer    = writer;

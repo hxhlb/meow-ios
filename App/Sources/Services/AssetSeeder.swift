@@ -1,5 +1,6 @@
 import Foundation
 import MeowModels
+import os
 
 /// Seeds the bundled `Country.mmdb` into the App Group container so
 /// `mihomo-config::default_geoip_path()` resolves (via `XDG_CONFIG_HOME`) to
@@ -7,9 +8,11 @@ import MeowModels
 /// it skips if the destination already matches the bundled size, and
 /// overwrites on a mismatch so a refreshed bundle beats a stale seeded copy.
 enum AssetSeeder {
+    private static let log = Logger(subsystem: "io.github.madeye.meow", category: "asset-seeder")
+
     static func seedIfNeeded() async {
         guard let src = Bundle.main.url(forResource: "Country", withExtension: "mmdb") else {
-            NSLog("AssetSeeder: Country.mmdb missing from app bundle — GEOIP lookups will fall back to geox-url")
+            log.error("Country.mmdb missing from app bundle — GEOIP lookups will fall back to geox-url")
             return
         }
         let dst = AppGroup.countryMmdbURL
@@ -25,7 +28,7 @@ enum AssetSeeder {
             }
             try FileManager.default.copyItem(at: src, to: dst)
         } catch {
-            NSLog("AssetSeeder: failed to seed Country.mmdb: %@", String(describing: error))
+            log.error("failed to seed Country.mmdb: \(String(describing: error), privacy: .public)")
         }
     }
 
