@@ -28,21 +28,6 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("settings.picker.logLevel")
             }
-            Section {
-                TextField(
-                    "settings.field.dnsServers",
-                    text: binding(\.dnsServers),
-                    prompt: Text("1.1.1.1, 8.8.8.8"),
-                )
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-                .accessibilityIdentifier("settings.field.dnsServers")
-            } header: {
-                Text("settings.section.dns")
-            } footer: {
-                Text("settings.footer.dnsServers")
-            }
             Section("settings.section.diagnostics") {
                 NavigationLink {
                     UserDiagnosticsView()
@@ -87,7 +72,6 @@ struct SettingsView: View {
             .onChange(of: preferences.allowLan) { _, _ in persist() }
             .onChange(of: preferences.ipv6) { _, _ in persist() }
             .onChange(of: preferences.logLevel) { _, _ in persist() }
-            .onChange(of: preferences.dnsServers) { _, _ in persist() }
             .task { await pollMemory() }
     }
 

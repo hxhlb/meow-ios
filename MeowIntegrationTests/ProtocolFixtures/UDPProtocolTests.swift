@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import XCTest
 
 /// End-to-end assertions for the three UDP-backed protocols in the
 /// §6.3 protocol matrix: WireGuard, Hysteria2, TUIC. Each one exercises
@@ -111,5 +112,8 @@ private enum FixtureAssertion {
 }
 
 private func drive(proxy _: String, assertion _: FixtureAssertion) throws {
-    Issue.record("drive(proxy:assertion:) not implemented — test should be skipped via .disabled until T2.9")
+    XCTFail(
+        "drive() must not run while UDP protocol stack is disabled — "
+            + "remove .disabled() and replace this stub when re-enabling",
+    )
 }

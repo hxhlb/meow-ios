@@ -83,25 +83,6 @@ struct ProvidersResponse: Decodable {
     let providers: [String: Provider]
 }
 
-struct MemoryResponse: Decodable {
-    let inuse: Int64
-    let oslimit: Int64?
-}
-
-struct ConfigsResponse: Decodable {
-    let mode: String
-    let logLevel: String
-    let allowLan: Bool
-    let ipv6: Bool
-}
-
-struct ConfigsPatch: Encodable {
-    var mode: String?
-    var logLevel: String?
-    var allowLan: Bool?
-    var ipv6: Bool?
-}
-
 struct LogEntry: Decodable {
     let type: String
     let payload: String

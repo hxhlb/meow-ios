@@ -2,6 +2,7 @@ import Foundation
 import MeowIPC
 import MeowModels
 import Observation
+import os
 
 /// App-side IPC: posts tunnel intents to the extension and observes the state
 /// and traffic snapshots the extension writes to the shared container.
@@ -10,6 +11,8 @@ import Observation
 final class AppIPCBridge {
     private(set) var currentState: VpnState = .init()
     private(set) var currentTraffic: TrafficSnapshot = .init()
+
+    private static let log = Logger(subsystem: "io.github.madeye.meow", category: "ipc-bridge")
 
     private var stateObserver: DarwinObserver?
     private var trafficObserver: DarwinObserver?
@@ -45,7 +48,7 @@ final class AppIPCBridge {
             // Queue failures are local-only (JSON encoding, disk write); log
             // via OSLog in a real build. The observable-state layer is the
             // user-visible surface, so we don't need to elevate here.
-            NSLog("IPCBridge: failed to queue intent: %@", String(describing: error))
+            Self.log.error("failed to queue intent: \(String(describing: error), privacy: .public)")
         }
     }
 

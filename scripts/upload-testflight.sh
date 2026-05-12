@@ -25,6 +25,44 @@
 
 set -euo pipefail
 
+# Warn (warn-only, exit 0) if any provisioning profile UUID expires within
+# 30 days. Each argument is a UUID under
+# ~/Library/MobileDevice/Provisioning Profiles/. Missing profile files are
+# reported as a warning but do not fail the script — the xcodebuild step
+# below will surface the hard error if signing actually fails.
+check_profile_expiry() {
+    local profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+    local now_epoch
+    now_epoch=$(date +%s)
+    local threshold=$((30 * 24 * 60 * 60))
+    local uuid path exp_iso exp_epoch delta
+    for uuid in "$@"; do
+        path="$profiles_dir/$uuid.mobileprovision"
+        if [[ ! -f "$path" ]]; then
+            echo "WARNING: provisioning profile $uuid not found at $path" >&2
+            continue
+        fi
+        exp_iso=$(security cms -D -i "$path" 2>/dev/null \
+            | /usr/libexec/PlistBuddy -c "Print :ExpirationDate" /dev/stdin 2>/dev/null \
+            || true)
+        if [[ -z "$exp_iso" ]]; then
+            echo "WARNING: could not read ExpirationDate for profile $uuid" >&2
+            continue
+        fi
+        exp_epoch=$(date -j -f "%a %b %d %T %Z %Y" "$exp_iso" +%s 2>/dev/null || echo "")
+        if [[ -z "$exp_epoch" ]]; then
+            echo "WARNING: could not parse ExpirationDate '$exp_iso' for $uuid" >&2
+            continue
+        fi
+        delta=$((exp_epoch - now_epoch))
+        if (( delta < threshold )); then
+            local days=$((delta / 86400))
+            echo "WARNING: provisioning profile $uuid expires in $days day(s) ($exp_iso)" >&2
+        fi
+    done
+    return 0
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -66,6 +104,8 @@ if [[ ! -f "$ASC_KEY_PATH" ]]; then
     echo "       Set ASC_KEY_PATH or place the .p8 at the default location." >&2
     exit 1
 fi
+
+check_profile_expiry "$APP_PROFILE" "$PT_PROFILE"
 
 mkdir -p "$ROOT/build"
 rm -rf "$EXPORT_DIR"
